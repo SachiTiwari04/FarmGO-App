@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "262006897136",
+    "project_id": "farm-go-app",
+    "storage_bucket": "farm-go-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:262006897136:android:b2be9121af9cadf3ca4535",
+        "android_client_info": {
+          "package_name": "com.example.farm_go_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVGO9Eb1Dh7Ctpo_zuWt48ReGAfyidFuQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

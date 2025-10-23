@@ -1,0 +1,1 @@
+{"flutter":{"platforms":{"android":{"default":{"projectId":"farm-go-app","appId":"1:262006897136:android:b2be9121af9cadf3ca4535","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"farm-go-app","configurations":{"android":"1:262006897136:android:b2be9121af9cadf3ca4535","ios":"1:262006897136:ios:329d64b9de901ffbca4535"}}}}}}
