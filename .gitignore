@@ -18,6 +18,7 @@ pubspec.lock # Typically committed, but can be ignored if desired (e.g., library
 # ================= Secrets (IMPORTANT!) =================
 # Ignore sensitive environment variables
 .env
+lib/firebase_options.dart
 
 # ================= IDE / Editor Files =================
 # IntelliJ / Android Studio
