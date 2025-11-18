@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:farm_go_app/firebase_services.dart';
 import 'package:farm_go_app/permission_handler.dart';
 import 'package:farm_go_app/user_model.dart'; // This now imports AppUser
+import 'package:farm_go_app/map_search_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -83,8 +84,8 @@ Future<void> _scheduleDailyReminder() async {
         ),
       ),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
+      // REMOVE these two lines:
+      // uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
       matchDateTimeComponents: DateTimeComponents.time,
     );
     developer.log('Successfully scheduled daily reminder.');
@@ -97,10 +98,15 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: ".env");
   print("--- API Key from .env: ${dotenv.env['GEMINI_API_KEY']} ---");
+  
+  // Initialize Firebase FIRST before creating any FirebaseServices instances
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
+  // NOW test the API (after Firebase is initialized)
+  await FirebaseServices().testGeminiApiDirectly();
+  
   await _initializeNotifications();
   tz.initializeTimeZones();
   _scheduleDailyReminder();
@@ -160,13 +166,17 @@ class FarmGoApp extends StatelessWidget {
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
+          print("--- STREAM BUILDER: Connection state: ${snapshot.connectionState}, Has data: ${snapshot.hasData}, User: ${snapshot.data?.uid} ---");
+          
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Scaffold(
                 body: Center(child: CircularProgressIndicator()));
           }
           if (snapshot.hasData) {
+            print("--- STREAM BUILDER: Showing FarmGoHomePage ---");
             return const FarmGoHomePage();
           }
+          print("--- STREAM BUILDER: Showing OnboardingScreen ---");
           return const OnboardingScreen();
         },
       ),
@@ -237,6 +247,8 @@ class _AuthScreenState extends State<AuthScreen> {
 
       AppUser? userDetails; // <-- RENAMED
 
+      print("--- AUTH FORM: Starting ${_isLogin ? 'login' : 'signup'} process ---");
+      
       if (_isLogin) {
         userDetails = await firebaseApi.logIn(
           email: _emailController.text.trim(),
@@ -252,9 +264,21 @@ class _AuthScreenState extends State<AuthScreen> {
         );
       }
 
+      print("--- AUTH FORM: Authentication completed, userDetails: ${userDetails != null ? 'SUCCESS' : 'NULL'} ---");
+
       // Update app state with farm type
       if (userDetails != null) {
         appState.setFarmType(userDetails.farmType);
+        print("--- AUTH FORM: Authentication successful, navigating to home page ---");
+        
+        // Navigate to home page after successful authentication
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => const FarmGoHomePage()),
+          );
+        }
+      } else {
+        print("--- AUTH FORM: userDetails is null, authentication failed ---");
       }
 
       if (mounted) {
@@ -809,6 +833,7 @@ class _ProblemsSectionState extends State<ProblemsSection> {
       subtitle:
           'Even with the best intentions, farmers face daily challenges that can compromise biosecurity.',
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: List.generate(_problems.length, (index) {
           final problem = _problems[index];
           bool isSelected = _selectedProblemIndex == index;
@@ -859,22 +884,115 @@ class ChallengeSection extends StatefulWidget {
   State<ChallengeSection> createState() => _ChallengeSectionState();
 }
 
-class _ChallengeSectionState extends State<ChallengeSection> {
+class _ChallengeSectionState extends State<ChallengeSection>
+    with TickerProviderStateMixin {
   late String _lossDataKey;
-  final Map<String, List<Map<String, dynamic>>> _lossData = const {
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
+  final Map<String, List<Map<String, dynamic>>> _diseaseData = const {
     'poultry': [
-      {'label': 'Avian Influenza', 'value': 120},
-      {'label': 'Newcastle Disease', 'value': 85},
-      {'label': 'Gumboro', 'value': 70},
-      {'label': 'Coccidiosis', 'value': 55},
-      {'label': 'Mycoplasmosis', 'value': 40}
+      {
+        'name': 'Avian Influenza',
+        'riskLevel': 'HIGH',
+        'riskValue': 90,
+        'icon': '🦠',
+        'symptoms': 'Sudden death, respiratory distress, drop in egg production',
+        'prevention': 'Vaccination every 6 months, strict biosecurity',
+        'season': 'October - March (Peak Winter)',
+        'urgency': 'Contact vet immediately if suspected'
+      },
+      {
+        'name': 'Newcastle Disease',
+        'riskLevel': 'MEDIUM',
+        'riskValue': 70,
+        'icon': '🦠',
+        'symptoms': 'Respiratory issues, nervous signs, diarrhea',
+        'prevention': 'Regular vaccination, quarantine new birds',
+        'season': 'Year-round with spring peaks',
+        'urgency': 'Isolate affected birds immediately'
+      },
+      {
+        'name': 'Infectious Bronchitis',
+        'riskLevel': 'MEDIUM',
+        'riskValue': 65,
+        'icon': '🫁',
+        'symptoms': 'Coughing, sneezing, reduced egg quality',
+        'prevention': 'Vaccination, proper ventilation',
+        'season': 'Cold weather months',
+        'urgency': 'Monitor flock closely'
+      },
+      {
+        'name': 'Coccidiosis',
+        'riskLevel': 'LOW',
+        'riskValue': 40,
+        'icon': '🩸',
+        'symptoms': 'Bloody diarrhea, weight loss, lethargy',
+        'prevention': 'Clean water, dry litter, anticoccidial drugs',
+        'season': 'Warm, humid conditions',
+        'urgency': 'Treatable with medication'
+      },
+      {
+        'name': 'Heat Stress',
+        'riskLevel': 'SEASONAL',
+        'riskValue': 50,
+        'icon': '🌡️',
+        'symptoms': 'Panting, reduced feed intake, drop in production',
+        'prevention': 'Adequate ventilation, cool water, shade',
+        'season': 'Summer months (April - June)',
+        'urgency': 'Immediate cooling measures needed'
+      }
     ],
     'pig': [
-      {'label': 'African Swine Fever (ASF)', 'value': 250},
-      {'label': 'PRRS', 'value': 180},
-      {'label': 'Classical Swine Fever (CSF)', 'value': 110},
-      {'label': 'Swine Dysentery', 'value': 75},
-      {'label': 'PED', 'value': 60}
+      {
+        'name': 'African Swine Fever',
+        'riskLevel': 'CRITICAL',
+        'riskValue': 95,
+        'icon': '🦠',
+        'symptoms': 'High fever, skin lesions, sudden death',
+        'prevention': 'Strict biosecurity, no swill feeding',
+        'season': 'Year-round threat',
+        'urgency': 'Report to authorities immediately'
+      },
+      {
+        'name': 'PRRS (Blue Ear)',
+        'riskLevel': 'HIGH',
+        'riskValue': 80,
+        'icon': '🦠',
+        'symptoms': 'Respiratory issues, reproductive failure',
+        'prevention': 'Vaccination, biosecurity protocols',
+        'season': 'Year-round with seasonal peaks',
+        'urgency': 'Veterinary consultation required'
+      },
+      {
+        'name': 'Classical Swine Fever',
+        'riskLevel': 'MEDIUM',
+        'riskValue': 60,
+        'icon': '🦠',
+        'symptoms': 'Fever, loss of appetite, skin hemorrhages',
+        'prevention': 'Vaccination where permitted, biosecurity',
+        'season': 'Year-round',
+        'urgency': 'Immediate isolation and testing'
+      },
+      {
+        'name': 'Swine Dysentery',
+        'riskLevel': 'MEDIUM',
+        'riskValue': 55,
+        'icon': '🩸',
+        'symptoms': 'Bloody diarrhea, weight loss, dehydration',
+        'prevention': 'Good hygiene, proper nutrition',
+        'season': 'Stress periods, poor conditions',
+        'urgency': 'Antibiotic treatment available'
+      },
+      {
+        'name': 'Feed Quality Issues',
+        'riskLevel': 'LOW',
+        'riskValue': 35,
+        'icon': '🌾',
+        'symptoms': 'Poor growth, digestive issues, mycotoxicosis',
+        'prevention': 'Quality feed sources, proper storage',
+        'season': 'Monsoon storage issues',
+        'urgency': 'Regular feed testing recommended'
+      }
     ],
   };
 
@@ -883,96 +1001,386 @@ class _ChallengeSectionState extends State<ChallengeSection> {
     super.initState();
     final farmType = Provider.of<AppState>(context, listen: false).currentFarmType;
     _lossDataKey = (farmType == 'Pig') ? 'pig' : 'poultry';
+    
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    );
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
+    );
+    
+    _animationController.forward();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final appState = Provider.of<AppState>(context);
     final theme = Theme.of(context);
-    final lossData = _lossData[_lossDataKey]!;
+    final diseaseData = _diseaseData[_lossDataKey]!;
 
-    return _buildSection(
-      context: context,
-      title: 'The High Cost of Disease',
-      subtitle:
-          'Disease outbreaks pose a significant economic threat. This section visualizes the estimated annual losses.',
-      child: Column(
-        children: [
-          if (appState.currentFarmType == 'Both')
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _buildLossToggleButton('poultry', 'Poultry', theme),
-                const SizedBox(width: 16),
-                _buildLossToggleButton('pig', 'Pigs', theme),
-              ],
-            ),
-          const SizedBox(height: 24),
-          Card(
-            elevation: 4,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                      _lossDataKey == 'poultry'
-                          ? 'Impact of Major Poultry Diseases'
-                          : 'Impact of Major Pig Diseases',
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold),
-                      textAlign: TextAlign.center),
-                  const SizedBox(height: 16),
-                  ...lossData.map(
-                    (data) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8.0),
-                      child: Row(
-                        children: [
-                          Expanded(
-                              flex: 2,
-                              child: Text(data['label'] as String,
-                                  style: const TextStyle(fontSize: 14))),
-                          Expanded(
-                              flex: 3,
-                              child: LinearProgressIndicator(
-                                  value: (data['value'] as int) / 250,
-                                  backgroundColor: Colors.grey[300],
-                                  color: theme.colorScheme.secondary,
-                                  minHeight: 12,
-                                  borderRadius: BorderRadius.circular(6))),
-                          const SizedBox(width: 8),
-                          Text('₹${data['value']}M',
-                              style: const TextStyle(
-                                  fontSize: 14, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ),
+    return FadeTransition(
+      opacity: _fadeAnimation,
+      child: _buildSection(
+        context: context,
+        title: '🦠 Major Farm Challenges & Disease Guide',
+        subtitle:
+            'Stay informed about key health threats and prevention strategies for your farm type.',
+        child: Column(
+          children: [
+            if (appState.currentFarmType == 'Both')
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(25),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildLossToggleButton('poultry', 'Poultry', theme),
+                    const SizedBox(width: 8),
+                    _buildLossToggleButton('pig', 'Pigs', theme),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 24),
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white,
+                    Colors.grey[50]!,
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.08),
+                    blurRadius: 15,
+                    offset: const Offset(0, 5),
                   ),
                 ],
               ),
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          _lossDataKey == 'poultry' ? Icons.pets : Icons.agriculture,
+                          color: theme.colorScheme.primary,
+                          size: 28,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            _lossDataKey == 'poultry'
+                                ? 'Major Poultry Health Challenges'
+                                : 'Major Pig Health Challenges',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.primary,
+                            ),
+                            textAlign: TextAlign.center,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    ...diseaseData.asMap().entries.map(
+                      (entry) {
+                        final index = entry.key;
+                        final disease = entry.value;
+                        
+                        return TweenAnimationBuilder<double>(
+                          duration: Duration(milliseconds: 400 + (index * 100)),
+                          tween: Tween(begin: 0.0, end: 1.0),
+                          builder: (context, animatedValue, child) {
+                            return Transform.translate(
+                              offset: Offset(0, 20 * (1 - animatedValue)),
+                              child: Opacity(
+                                opacity: animatedValue,
+                                child: Container(
+                                  margin: const EdgeInsets.symmetric(vertical: 6.0),
+                                  child: ExpansionTile(
+                                    tilePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                                    childrenPadding: const EdgeInsets.all(20),
+                                    backgroundColor: Colors.white,
+                                    collapsedBackgroundColor: Colors.grey[50],
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      side: BorderSide(
+                                        color: _getRiskColor(disease['riskLevel'] as String).withOpacity(0.2),
+                                        width: 1,
+                                      ),
+                                    ),
+                                    collapsedShape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      side: BorderSide(
+                                        color: Colors.grey[300]!,
+                                        width: 1,
+                                      ),
+                                    ),
+                                    leading: Text(
+                                      disease['icon'] as String,
+                                      style: const TextStyle(fontSize: 20),
+                                    ),
+                                    title: Text(
+                                      disease['name'] as String,
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    trailing: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: _getRiskColor(disease['riskLevel'] as String).withOpacity(0.1),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        disease['riskLevel'] as String,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                          color: _getRiskColor(disease['riskLevel'] as String),
+                                        ),
+                                      ),
+                                    ),
+                                    children: [
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          _buildSimpleInfoRow('🩺 Symptoms', disease['symptoms'] as String),
+                                          const SizedBox(height: 12),
+                                          _buildSimpleInfoRow('🛡️ Prevention', disease['prevention'] as String),
+                                          const SizedBox(height: 12),
+                                          _buildSimpleInfoRow('📅 Peak Season', disease['season'] as String),
+                                          const SizedBox(height: 12),
+                                          _buildSimpleInfoRow('⚡ Urgent Action', disease['urgency'] as String),
+                                          const SizedBox(height: 16),
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: OutlinedButton(
+                                                  onPressed: () => _showPreventionGuide(disease),
+                                                  style: OutlinedButton.styleFrom(
+                                                    foregroundColor: theme.colorScheme.primary,
+                                                    side: BorderSide(color: theme.colorScheme.primary),
+                                                  ),
+                                                  child: const Text('Prevention Guide'),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Color _getRiskColor(String riskLevel) {
+    switch (riskLevel) {
+      case 'CRITICAL':
+        return Colors.red[800]!;
+      case 'HIGH':
+        return Colors.red[600]!;
+      case 'MEDIUM':
+        return Colors.orange[600]!;
+      case 'LOW':
+        return Colors.green[600]!;
+      case 'SEASONAL':
+        return Colors.blue[600]!;
+      default:
+        return Colors.grey[600]!;
+    }
+  }
+
+  Widget _buildSimpleInfoRow(String label, String content) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
           ),
-        ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          content,
+          style: TextStyle(
+            fontSize: 13,
+            color: Colors.grey[700],
+            height: 1.4,
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showPreventionGuide(Map<String, dynamic> disease) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        maxChildSize: 0.9,
+        minChildSize: 0.5,
+        builder: (context, scrollController) => Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Drag handle indicator
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[400],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  Text(
+                    disease['icon'] as String,
+                    style: const TextStyle(fontSize: 32),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      'Prevention Guide: ${disease['name']}',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Close',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  children: [
+                    _buildPreventionCard('🛡️ Primary Prevention', disease['prevention'] as String),
+                    const SizedBox(height: 16),
+                    _buildPreventionCard('📅 Seasonal Awareness', disease['season'] as String),
+                    const SizedBox(height: 16),
+                    _buildPreventionCard('⚡ Urgent Actions', disease['urgency'] as String),
+                    const SizedBox(height: 16),
+                    _buildPreventionCard('🩺 Watch for Symptoms', disease['symptoms'] as String),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+
+  Widget _buildPreventionCard(String title, String content) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(content),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildLossToggleButton(String key, String label, ThemeData theme) {
     bool isSelected = _lossDataKey == key;
-    return ElevatedButton(
-      onPressed: () => setState(() => _lossDataKey = key),
-      style: ElevatedButton.styleFrom(
-        foregroundColor:
-            isSelected ? theme.colorScheme.onPrimary : Colors.grey[800],
-        backgroundColor:
-            isSelected ? theme.colorScheme.primary : Colors.grey[200],
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        elevation: isSelected ? 2 : 0,
-        minimumSize: const Size(100, 40),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      child: ElevatedButton(
+        onPressed: () => setState(() => _lossDataKey = key),
+        style: ElevatedButton.styleFrom(
+          foregroundColor:
+              isSelected ? Colors.white : theme.colorScheme.primary,
+          backgroundColor:
+              isSelected ? theme.colorScheme.primary : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(
+              color: theme.colorScheme.primary,
+              width: 2,
+            ),
+          ),
+          elevation: isSelected ? 4 : 0,
+          minimumSize: const Size(100, 45),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              key == 'poultry' ? Icons.pets : Icons.agriculture,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
       ),
-      child: Text(label),
     );
   }
 }
@@ -1492,12 +1900,28 @@ class _MapPageState extends State<MapPage> {
   final Set<Marker> _markers = {};
   final user = FirebaseAuth.instance.currentUser!;
   final _firebaseServices = FirebaseServices();
+  final _searchService = MapSearchService();
+  final _searchController = TextEditingController();
   static const LatLng _center = LatLng(20.5937, 78.9629);
+  
+  // Search state
+  List<SearchResult> _searchResults = [];
+  bool _isSearching = false;
+  bool _showSearchResults = false;
+  MapType _currentMapType = MapType.normal;
+  Timer? _searchDebounceTimer;
 
   @override
   void initState() {
     super.initState();
     _listenToMarkers();
+  }
+
+  @override
+  void dispose() {
+    _searchDebounceTimer?.cancel();
+    _searchController.dispose();
+    super.dispose();
   }
 
   void _listenToMarkers() {
@@ -1558,6 +1982,123 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
+  // Optimized search functionality with debouncing
+  void _performSearch(String query) {
+    // Cancel previous timer
+    _searchDebounceTimer?.cancel();
+    
+    if (query.trim().isEmpty) {
+      setState(() {
+        _showSearchResults = false;
+        _searchResults = [];
+        _isSearching = false;
+      });
+      return;
+    }
+
+    // Show loading immediately for better UX
+    setState(() {
+      _isSearching = true;
+      _showSearchResults = true;
+    });
+
+    // Debounce the actual search
+    _searchDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      try {
+        final results = await _searchService.search(query);
+        if (mounted) {
+          setState(() {
+            _searchResults = results;
+            _isSearching = false;
+          });
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _isSearching = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Search error: $e')),
+          );
+        }
+      }
+    });
+  }
+
+  void _selectSearchResult(SearchResult result) async {
+    _searchService.addToHistory(result);
+    _searchController.text = result.name;
+    
+    setState(() {
+      _showSearchResults = false;
+    });
+
+    // Animate camera to the selected location
+    final controller = await _controller.future;
+    await controller.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: result.coordinates,
+          zoom: 16.0,
+        ),
+      ),
+    );
+
+    // Add a temporary marker for the searched location
+    if (result.type == 'google_places') {
+      setState(() {
+        _markers.add(
+          Marker(
+            markerId: MarkerId('search_result_${result.id}'),
+            position: result.coordinates,
+            infoWindow: InfoWindow(
+              title: result.name,
+              snippet: result.description,
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+          ),
+        );
+      });
+    }
+  }
+
+  void _getCurrentLocation() async {
+    final location = await _searchService.getCurrentLocation();
+    if (location != null) {
+
+      final controller = await _controller.future;
+      await controller.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: location, zoom: 16.0),
+        ),
+      );
+
+      // Add current location marker
+      setState(() {
+        _markers.add(
+          Marker(
+            markerId: const MarkerId('current_location'),
+            position: location,
+            infoWindow: const InfoWindow(title: 'Your Location'),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+          ),
+        );
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not get current location')),
+      );
+    }
+  }
+
+  void _toggleMapType() {
+    setState(() {
+      _currentMapType = _currentMapType == MapType.normal 
+          ? MapType.satellite 
+          : MapType.normal;
+    });
+  }
+
   void _onMapTap(LatLng position) {
     String name = '';
     String type = 'Pen';
@@ -1613,7 +2154,32 @@ class _MapPageState extends State<MapPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Farm Map'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            // Try to pop first, if that fails, navigate to home
+            if (Navigator.canPop(context)) {
+              Navigator.pop(context);
+            } else {
+              // Navigate back to home tab
+              final homeState = context.findAncestorStateOfType<_FarmGoHomePageState>();
+              homeState?._onItemTapped(0); // Go to home tab (index 0)
+            }
+          },
+        ),
         actions: [
+          IconButton(
+            icon: Icon(_currentMapType == MapType.normal 
+                ? Icons.satellite_alt 
+                : Icons.map),
+            tooltip: 'Toggle Map Type',
+            onPressed: _toggleMapType,
+          ),
+          IconButton(
+            icon: const Icon(Icons.my_location),
+            tooltip: 'Current Location',
+            onPressed: _getCurrentLocation,
+          ),
           IconButton(
             icon: const Icon(Icons.add_location_alt_outlined),
             tooltip: 'Add Location',
@@ -1625,14 +2191,105 @@ class _MapPageState extends State<MapPage> {
           ),
         ],
       ),
-      body: GoogleMap(
-        onMapCreated: (GoogleMapController controller) {
-          _controller.complete(controller);
-        },
-        initialCameraPosition:
-            const CameraPosition(target: _center, zoom: 5.0),
-        markers: _markers,
-        onTap: _onMapTap,
+      body: Stack(
+        children: [
+          GoogleMap(
+            onMapCreated: (GoogleMapController controller) {
+              _controller.complete(controller);
+            },
+            initialCameraPosition:
+                const CameraPosition(target: _center, zoom: 5.0),
+            markers: _markers,
+            onTap: _onMapTap,
+            mapType: _currentMapType,
+          ),
+          
+          // Search bar
+          Positioned(
+            top: 16,
+            left: 16,
+            right: 16,
+            child: Card(
+              elevation: 8,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: _searchController,
+                    decoration: InputDecoration(
+                      hintText: 'Search locations...',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _searchController.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() {
+                                  _showSearchResults = false;
+                                  _searchResults = [];
+                                });
+                              },
+                            )
+                          : null,
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.all(16),
+                    ),
+                    onChanged: _performSearch,
+                  ),
+                  
+                  // Search results
+                  if (_showSearchResults) ...[
+                    const Divider(height: 1),
+                    Container(
+                      constraints: const BoxConstraints(maxHeight: 300),
+                      child: _isSearching
+                          ? const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Center(child: CircularProgressIndicator()),
+                            )
+                          : _searchResults.isEmpty
+                              ? const Padding(
+                                  padding: EdgeInsets.all(16),
+                                  child: Text('No results found'),
+                                )
+                              : ListView.builder(
+                                  shrinkWrap: true,
+                                  itemCount: _searchResults.length,
+                                  itemBuilder: (context, index) {
+                                    final result = _searchResults[index];
+                                    return ListTile(
+                                      leading: Icon(
+                                        result.type == 'local'
+                                            ? Icons.location_on
+                                            : Icons.place,
+                                        color: result.type == 'local'
+                                            ? Colors.green
+                                            : Colors.blue,
+                                      ),
+                                      title: Text(result.name),
+                                      subtitle: Text(result.description),
+                                      trailing: IconButton(
+                                        icon: const Icon(Icons.favorite_border),
+                                        onPressed: () {
+                                          _searchService.addToFavorites(result);
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            const SnackBar(
+                                              content: Text('Added to favorites'),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                      onTap: () => _selectSearchResult(result),
+                                    );
+                                  },
+                                ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2045,8 +2702,7 @@ class CustomBarChart extends StatelessWidget {
                   getTitlesWidget: (value, meta) {
                     if (value.toInt() < labels.length) {
                       return SideTitleWidget(
-                          axisSide: meta.axisSide,
-                          space: 4,
+                          meta: meta,  // CORRECTED: meta is required
                           child: Text(labels[value.toInt()],
                               style: const TextStyle(fontSize: 10)));
                     }
@@ -2071,7 +2727,6 @@ class CustomBarChart extends StatelessWidget {
     );
   }
 }
-
 class CustomLineChart extends StatelessWidget {
   final List<double> data;
   final List<String> labels;
@@ -2118,8 +2773,7 @@ class CustomLineChart extends StatelessWidget {
                   getTitlesWidget: (value, meta) {
                     if (value.toInt() < labels.length) {
                       return SideTitleWidget(
-                          axisSide: meta.axisSide,
-                          space: 4,
+                          meta: meta,  // CORRECTED: meta is required
                           child: Text(labels[value.toInt()],
                               style: const TextStyle(fontSize: 10)));
                     }

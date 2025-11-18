@@ -13,6 +13,8 @@ import 'package:farm_go_app/user_model.dart'; // This now imports AppUser
 // ADDED for Gemini API
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 
 class FirebaseServices {
@@ -63,23 +65,39 @@ class FirebaseServices {
     required String password,
   }) async {
     try {
+      print("--- LOGIN: Starting authentication for $email ---");
       UserCredential userCredential = await _auth.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
 
+      print("--- LOGIN: Authentication successful, UID: ${userCredential.user!.uid} ---");
       final uid = userCredential.user!.uid;
       final doc = await _db.collection('users').doc(uid).get();
 
       if (doc.exists) {
         final data = doc.data() as Map<String, dynamic>;
+        print("--- LOGIN: User data retrieved successfully ---");
         return AppUser.fromMap(data); // <-- RENAMED
       } else {
-        return null;
+        print("--- LOGIN: User document does not exist, creating default user document ---");
+        // Create a default user document for existing authenticated users
+        final Map<String, dynamic> defaultUserMap = {
+          'fullName': 'User', // Default name
+          'farmLocation': 'Not specified',
+          'farmType': 'Poultry', // Default farm type
+          'email': _auth.currentUser?.email ?? '',
+        };
+        
+        await _db.collection('users').doc(uid).set(defaultUserMap);
+        print("--- LOGIN: Default user document created ---");
+        return AppUser.fromMap(defaultUserMap);
       }
-    } on FirebaseAuthException {
+    } on FirebaseAuthException catch (e) {
+      print("--- LOGIN: FirebaseAuthException: ${e.code} - ${e.message} ---");
       rethrow;
     } catch (e) {
+      print("--- LOGIN: General exception: $e ---");
       rethrow;
     }
   }
@@ -91,6 +109,11 @@ class FirebaseServices {
 
   /// Fetch user profile by UID (used by main.dart per diagnostics).
   Future<AppUser?> getUserDetails(String uid) async { // <-- RENAMED
+    // Check if user is authenticated
+    if (_auth.currentUser == null) {
+      throw Exception('User not authenticated');
+    }
+    
     final doc = await _db.collection('users').doc(uid).get();
     if (doc.exists) {
       final data = doc.data() as Map<String, dynamic>;
@@ -181,39 +204,121 @@ class FirebaseServices {
   // --------------------
   // Chatbot (NOW POWERED BY GEMINI)
   // --------------------
-  Future<String> getChatbotResponse(String prompt) async {
-    print("--- 1. getChatbotResponse called with prompt: $prompt ---");
-    try {
-      final apiKey = dotenv.env['GEMINI_API_KEY'];
-      
-      if (apiKey == null || apiKey.isEmpty) {
-        print("--- 2. ERROR: API key is null or empty. ---");
-        return 'Error: API Key is missing from .env file.';
-      }
-      
-      print("--- 2. API Key loaded successfully. ---");
-
-      final model = GenerativeModel(model: 'gemini-pro', apiKey: apiKey);
-      print("--- 3. GenerativeModel initialized. ---");
-
-      final content = [Content.text(prompt)];
-      final response = await model.generateContent(content);
-      print("--- 4. Received response from Gemini API. ---");
-
-      return response.text ?? "Sorry, I received an empty response.";
-
-    } catch (e, s) { 
-      print("--- X. CATCH BLOCK ERROR ---");
-      print("THE REAL ERROR IS: $e");
-      print("STACK TRACE: $s");
-      return 'An error occurred while trying to get a response. Please check your connection and API key.';
+ Future<String> getChatbotResponse(String prompt) async {
+  print("--- 1. getChatbotResponse called with prompt: $prompt ---");
+  try {
+    final apiKey = dotenv.env['GEMINI_API_KEY'];
+    
+    if (apiKey == null || apiKey.isEmpty) {
+      print("--- 2. ERROR: API key is null or empty. ---");
+      return 'Error: API Key is missing from .env file.';
     }
-  }
+    
+    print("--- 2. API Key loaded successfully. ---");
 
+    // Use the correct model name from the available list
+    final url = Uri.parse(
+      'https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=$apiKey'
+    );
+    
+    print("--- 3. Making HTTP request to Gemini API ---");
+
+    final response = await http.post(
+      url,
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({
+        'contents': [
+          {
+            'parts': [
+              {'text': prompt}
+            ]
+          }
+        ]
+      }),
+    );
+
+    print("--- 4. Response received. Status: ${response.statusCode} ---");
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      final text = data['candidates']?[0]?['content']?['parts']?[0]?['text'];
+      return text ?? "Sorry, I received an empty response.";
+    } else {
+      print("--- ERROR: ${response.body} ---");
+      return 'Error: Unable to get response from AI. Status: ${response.statusCode}';
+    }
+
+  } catch (e, s) { 
+    print("--- X. CATCH BLOCK ERROR ---");
+    print("THE REAL ERROR IS: $e");
+    print("STACK TRACE: $s");
+    return 'An error occurred: $e';
+  }
+}
   // --------------------
   // Profile update
   // --------------------
   Future<void> updateUserProfile(String uid, Map<String, dynamic> updates) async {
     await _db.collection('users').doc(uid).update(updates);
   }
+  // Add this method to test which models are available
+Future<void> listAvailableModels() async {
+  try {
+    final apiKey = dotenv.env['GEMINI_API_KEY'];
+    if (apiKey == null || apiKey.isEmpty) {
+      print("No API key found");
+      return;
+    }
+
+    // Try to list models using the API directly
+    print("--- Attempting to list available models ---");
+    
+    // Try the simplest model name first
+    final model = GenerativeModel(model: 'models/gemini-pro', apiKey: apiKey);
+    final content = [Content.text("Hello")];
+    final response = await model.generateContent(content);
+    print("SUCCESS with models/gemini-pro: ${response.text}");
+    
+  } catch (e) {
+    print("Error listing models: $e");
+  }
+}
+Future<void> testGeminiApiDirectly() async {
+  final apiKey = dotenv.env['GEMINI_API_KEY'];
+  if (apiKey == null) {
+    print("No API key");
+    return;
+  }
+
+  try {
+    // List available models
+    final url = Uri.parse(
+      'https://generativelanguage.googleapis.com/v1/models?key=$apiKey'
+    );
+    
+    final response = await http.get(url);
+
+    print("========== LISTING AVAILABLE MODELS ==========");
+    print("Status Code: ${response.statusCode}");
+    
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      final models = data['models'] as List;
+      
+      print("Available models:");
+      for (var model in models) {
+        print("  - ${model['name']}");
+      }
+    } else {
+      print("Error: ${response.body}");
+    }
+    print("==============================================");
+    
+  } catch (e) {
+    print("========== ERROR LISTING MODELS ==========");
+    print("Error: $e");
+    print("==========================================");
+  }
+}
+
 }
