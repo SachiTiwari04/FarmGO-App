@@ -1,13 +1,12 @@
-// lib/map_search_service.dart
-
+// lib/map_search_service.dart - REPLACE YOUR EXISTING FILE
 import 'dart:async';
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:farm_go_app/location_service.dart';
 
 class SearchResult {
   final String id;
@@ -30,6 +29,7 @@ class SearchResult {
 class MapSearchService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final _locationService = LocationService(); // Use singleton location service
   
   // Google Places API key from .env file
   String? get _placesApiKey => dotenv.env['GOOGLE_PLACES_API_KEY'];
@@ -270,29 +270,17 @@ class MapSearchService {
   // Get favorites
   List<SearchResult> getFavorites() => List.from(_favorites);
 
-  // Get current location
+  // Get current location using the singleton LocationService
   Future<LatLng?> getCurrentLocation() async {
-    try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          return null;
-        }
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        return null;
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      
+    final position = await _locationService.getCurrentLocation();
+    if (position != null) {
       return LatLng(position.latitude, position.longitude);
-    } catch (e) {
-      print('Error getting current location: $e');
-      return null;
     }
+    return null;
+  }
+  
+  // Clear location cache when needed
+  void clearLocationCache() {
+    _locationService.clearCache();
   }
 }

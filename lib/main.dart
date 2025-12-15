@@ -7,6 +7,7 @@ import 'package:farm_go_app/firebase_services.dart';
 import 'package:farm_go_app/permission_handler.dart';
 import 'package:farm_go_app/user_model.dart'; // This now imports AppUser
 import 'package:farm_go_app/map_search_service.dart';
+import 'package:farm_go_app/location_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -93,21 +94,30 @@ Future<void> _scheduleDailyReminder() async {
     developer.log('Could not schedule notification due to permission error: $e');
   }
 }
-
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: ".env");
-  print("--- API Key from .env: ${dotenv.env['GEMINI_API_KEY']} ---");
   
-  // Initialize Firebase FIRST before creating any FirebaseServices instances
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
+  print("🚀 FarmGo starting...");
+  
+  // ✅ FIX: Initialize heavy operations in parallel
+  await Future.wait([
+    dotenv.load(fileName: ".env"),
+    Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform),
+    _initializeNotifications(),
+  ]);
+  
+  print("--- API Key loaded: ${dotenv.env['GEMINI_API_KEY']?.substring(0, 10)}... ---");
+  
+  FirebaseFirestore.instance.settings = const Settings(
+    persistenceEnabled: true,
+    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
   );
-
-  // NOW test the API (after Firebase is initialized)
-  await FirebaseServices().testGeminiApiDirectly();
   
-  await _initializeNotifications();
+  // Test API in background (non-blocking)
+  FirebaseServices().testGeminiApiDirectly().catchError((e) {
+    print("⚠️ Gemini test failed (non-critical): $e");
+  });
+  
   tz.initializeTimeZones();
   _scheduleDailyReminder();
 
@@ -126,7 +136,6 @@ void main() async {
     );
   });
 }
-
 // =========================================================================
 // App Definition & Auth Flow
 // =========================================================================
@@ -1889,6 +1898,8 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 }
 
+// ✅ REPLACE YOUR ENTIRE MapPage CLASS WITH THIS OPTIMIZED VERSION
+
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
   @override
@@ -1910,11 +1921,20 @@ class _MapPageState extends State<MapPage> {
   bool _showSearchResults = false;
   MapType _currentMapType = MapType.normal;
   Timer? _searchDebounceTimer;
+  
+  // ✅ FIX 1: Lazy loading state
+  bool _mapReady = false;
+  bool _shouldLoadMap = false;
 
   @override
   void initState() {
     super.initState();
-    _listenToMarkers();
+    // ✅ FIX 2: Delay map initialization to let UI settle
+    Future.delayed(const Duration(milliseconds: 400), () {
+      if (mounted) {
+        setState(() => _shouldLoadMap = true);
+      }
+    });
   }
 
   @override
@@ -1958,8 +1978,7 @@ class _MapPageState extends State<MapPage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(location['name'],
-                style:
-                    const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Text('Type: ${location['type']}'),
             const SizedBox(height: 16),
@@ -1982,9 +2001,7 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
-  // Optimized search functionality with debouncing
   void _performSearch(String query) {
-    // Cancel previous timer
     _searchDebounceTimer?.cancel();
     
     if (query.trim().isEmpty) {
@@ -1996,13 +2013,11 @@ class _MapPageState extends State<MapPage> {
       return;
     }
 
-    // Show loading immediately for better UX
     setState(() {
       _isSearching = true;
       _showSearchResults = true;
     });
 
-    // Debounce the actual search
     _searchDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
       try {
         final results = await _searchService.search(query);
@@ -2014,9 +2029,7 @@ class _MapPageState extends State<MapPage> {
         }
       } catch (e) {
         if (mounted) {
-          setState(() {
-            _isSearching = false;
-          });
+          setState(() => _isSearching = false);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Search error: $e')),
           );
@@ -2029,11 +2042,8 @@ class _MapPageState extends State<MapPage> {
     _searchService.addToHistory(result);
     _searchController.text = result.name;
     
-    setState(() {
-      _showSearchResults = false;
-    });
+    setState(() => _showSearchResults = false);
 
-    // Animate camera to the selected location
     final controller = await _controller.future;
     await controller.animateCamera(
       CameraUpdate.newCameraPosition(
@@ -2044,7 +2054,6 @@ class _MapPageState extends State<MapPage> {
       ),
     );
 
-    // Add a temporary marker for the searched location
     if (result.type == 'google_places') {
       setState(() {
         _markers.add(
@@ -2063,9 +2072,12 @@ class _MapPageState extends State<MapPage> {
   }
 
   void _getCurrentLocation() async {
-    final location = await _searchService.getCurrentLocation();
-    if (location != null) {
-
+    final locationService = LocationService();
+    final position = await locationService.getCurrentLocation();
+    
+    if (position != null) {
+      final location = LatLng(position.latitude, position.longitude);
+      
       final controller = await _controller.future;
       await controller.animateCamera(
         CameraUpdate.newCameraPosition(
@@ -2073,7 +2085,6 @@ class _MapPageState extends State<MapPage> {
         ),
       );
 
-      // Add current location marker
       setState(() {
         _markers.add(
           Marker(
@@ -2085,9 +2096,11 @@ class _MapPageState extends State<MapPage> {
         );
       });
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not get current location')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not get location. Check permissions.')),
+        );
+      }
     }
   }
 
@@ -2157,13 +2170,11 @@ class _MapPageState extends State<MapPage> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () {
-            // Try to pop first, if that fails, navigate to home
             if (Navigator.canPop(context)) {
               Navigator.pop(context);
             } else {
-              // Navigate back to home tab
               final homeState = context.findAncestorStateOfType<_FarmGoHomePageState>();
-              homeState?._onItemTapped(0); // Go to home tab (index 0)
+              homeState?._onItemTapped(0);
             }
           },
         ),
@@ -2185,116 +2196,152 @@ class _MapPageState extends State<MapPage> {
             tooltip: 'Add Location',
             onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                  content: Text(
-                      'Tap anywhere on the map to add a new location pin.')),
+                  content: Text('Tap anywhere on the map to add a new location pin.')),
             ),
           ),
         ],
       ),
-      body: Stack(
-        children: [
-          GoogleMap(
-            onMapCreated: (GoogleMapController controller) {
-              _controller.complete(controller);
-            },
-            initialCameraPosition:
-                const CameraPosition(target: _center, zoom: 5.0),
-            markers: _markers,
-            onTap: _onMapTap,
-            mapType: _currentMapType,
-          ),
-          
-          // Search bar
-          Positioned(
-            top: 16,
-            left: 16,
-            right: 16,
-            child: Card(
-              elevation: 8,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Search locations...',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _searchController.text.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: () {
-                                _searchController.clear();
-                                setState(() {
-                                  _showSearchResults = false;
-                                  _searchResults = [];
-                                });
-                              },
-                            )
-                          : null,
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.all(16),
-                    ),
-                    onChanged: _performSearch,
-                  ),
-                  
-                  // Search results
-                  if (_showSearchResults) ...[
-                    const Divider(height: 1),
-                    Container(
-                      constraints: const BoxConstraints(maxHeight: 300),
-                      child: _isSearching
-                          ? const Padding(
-                              padding: EdgeInsets.all(16),
-                              child: Center(child: CircularProgressIndicator()),
-                            )
-                          : _searchResults.isEmpty
+      body: _shouldLoadMap 
+        ? Stack(
+            children: [
+              GoogleMap(
+                onMapCreated: (GoogleMapController controller) {
+                  _controller.complete(controller);
+                  setState(() => _mapReady = true);
+                  // ✅ FIX 3: Start listening to markers only after map is ready
+                  _listenToMarkers();
+                },
+                initialCameraPosition: const CameraPosition(
+                  target: _center, 
+                  zoom: 5.0
+                ),
+                markers: _markers,
+                onTap: _onMapTap,
+                mapType: _currentMapType,
+                minMaxZoomPreference: const MinMaxZoomPreference(3, 20),
+                // ✅ FIX 4: Performance optimizations
+                myLocationEnabled: true,
+                myLocationButtonEnabled: false, // We have custom button
+                trafficEnabled: false,
+                buildingsEnabled: true,
+                indoorViewEnabled: false,
+              ),
+              
+              // Search bar
+              Positioned(
+                top: 16,
+                left: 16,
+                right: 16,
+                child: Card(
+                  elevation: 8,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: _searchController,
+                        decoration: InputDecoration(
+                          hintText: 'Search locations...',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _searchController.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear),
+                                  onPressed: () {
+                                    _searchController.clear();
+                                    setState(() {
+                                      _showSearchResults = false;
+                                      _searchResults = [];
+                                    });
+                                  },
+                                )
+                              : null,
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.all(16),
+                        ),
+                        onChanged: _performSearch,
+                      ),
+                      
+                      if (_showSearchResults) ...[
+                        const Divider(height: 1),
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 300),
+                          child: _isSearching
                               ? const Padding(
                                   padding: EdgeInsets.all(16),
-                                  child: Text('No results found'),
+                                  child: Center(child: CircularProgressIndicator()),
                                 )
-                              : ListView.builder(
-                                  shrinkWrap: true,
-                                  itemCount: _searchResults.length,
-                                  itemBuilder: (context, index) {
-                                    final result = _searchResults[index];
-                                    return ListTile(
-                                      leading: Icon(
-                                        result.type == 'local'
-                                            ? Icons.location_on
-                                            : Icons.place,
-                                        color: result.type == 'local'
-                                            ? Colors.green
-                                            : Colors.blue,
-                                      ),
-                                      title: Text(result.name),
-                                      subtitle: Text(result.description),
-                                      trailing: IconButton(
-                                        icon: const Icon(Icons.favorite_border),
-                                        onPressed: () {
-                                          _searchService.addToFavorites(result);
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(
-                                              content: Text('Added to favorites'),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                      onTap: () => _selectSearchResult(result),
-                                    );
-                                  },
-                                ),
-                    ),
-                  ],
-                ],
+                              : _searchResults.isEmpty
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(16),
+                                      child: Text('No results found'),
+                                    )
+                                  : ListView.builder(
+                                      shrinkWrap: true,
+                                      itemCount: _searchResults.length,
+                                      itemBuilder: (context, index) {
+                                        final result = _searchResults[index];
+                                        return ListTile(
+                                          leading: Icon(
+                                            result.type == 'local'
+                                                ? Icons.location_on
+                                                : Icons.place,
+                                            color: result.type == 'local'
+                                                ? Colors.green
+                                                : Colors.blue,
+                                          ),
+                                          title: Text(result.name),
+                                          subtitle: Text(result.description),
+                                          trailing: IconButton(
+                                            icon: const Icon(Icons.favorite_border),
+                                            onPressed: () {
+                                              _searchService.addToFavorites(result);
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(
+                                                  content: Text('Added to favorites'),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                          onTap: () => _selectSearchResult(result),
+                                        );
+                                      },
+                                    ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
+              
+              // ✅ FIX 5: Loading indicator while map initializes
+              if (!_mapReady)
+                Container(
+                  color: Colors.white,
+                  child: const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text('Loading map...'),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          )
+        : const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Preparing map...'),
+              ],
             ),
           ),
-        ],
-      ),
     );
   }
 }
-
 // =========================================================================
 // === NEW DETAIL SCREENS ===
 // =========================================================================

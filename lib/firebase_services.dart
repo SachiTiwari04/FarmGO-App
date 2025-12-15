@@ -1,21 +1,15 @@
 // lib/firebase_services.dart
-
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:developer' as developer;
-
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:farm_go_app/user_model.dart'; // This now imports AppUser
-
-// ADDED for Gemini API
+import 'package:farm_go_app/user_model.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-
 
 class FirebaseServices {
   // ----- core firebase clients -----
@@ -23,12 +17,28 @@ class FirebaseServices {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
 
+  // ----- Gemini model instance (reused for performance) -----
+  GenerativeModel? _geminiModel;
+
+  // Initialize Gemini model once with CORRECT model name
+  GenerativeModel _getGeminiModel() {
+    if (_geminiModel == null) {
+      final apiKey = dotenv.env['GEMINI_API_KEY'];
+      if (apiKey == null || apiKey.isEmpty) {
+        throw Exception('GEMINI_API_KEY not found in .env file');
+      }
+      _geminiModel = GenerativeModel(
+        model: 'gemini-2.5-flash', // ✅ Using the latest available model
+        apiKey: apiKey,
+      );
+    }
+    return _geminiModel!;
+  }
+
   // --------------------
   // Auth + profile methods
   // --------------------
-
-  /// Create auth user, write profile doc and return an AppUser object.
-  Future<AppUser?> signUp({ // <-- RENAMED
+  Future<AppUser?> signUp({
     required String email,
     required String password,
     required String fullName,
@@ -50,17 +60,15 @@ class FirebaseServices {
       };
 
       await _db.collection('users').doc(uid).set(userMap);
-
-      return AppUser.fromMap(userMap); // <-- RENAMED
+      return AppUser.fromMap(userMap);
     } on FirebaseAuthException {
-      rethrow; 
+      rethrow;
     } catch (e) {
       rethrow;
     }
   }
 
-  /// Sign in and fetch profile doc by uid.
-  Future<AppUser?> logIn({ // <-- RENAMED
+  Future<AppUser?> logIn({
     required String email,
     required String password,
   }) async {
@@ -78,14 +86,13 @@ class FirebaseServices {
       if (doc.exists) {
         final data = doc.data() as Map<String, dynamic>;
         print("--- LOGIN: User data retrieved successfully ---");
-        return AppUser.fromMap(data); // <-- RENAMED
+        return AppUser.fromMap(data);
       } else {
         print("--- LOGIN: User document does not exist, creating default user document ---");
-        // Create a default user document for existing authenticated users
         final Map<String, dynamic> defaultUserMap = {
-          'fullName': 'User', // Default name
+          'fullName': 'User',
           'farmLocation': 'Not specified',
-          'farmType': 'Poultry', // Default farm type
+          'farmType': 'Poultry',
           'email': _auth.currentUser?.email ?? '',
         };
         
@@ -102,14 +109,11 @@ class FirebaseServices {
     }
   }
 
-  /// Sign out helper (used in main.dart).
   Future<void> signOut() async {
     await _auth.signOut();
   }
 
-  /// Fetch user profile by UID (used by main.dart per diagnostics).
-  Future<AppUser?> getUserDetails(String uid) async { // <-- RENAMED
-    // Check if user is authenticated
+  Future<AppUser?> getUserDetails(String uid) async {
     if (_auth.currentUser == null) {
       throw Exception('User not authenticated');
     }
@@ -117,7 +121,7 @@ class FirebaseServices {
     final doc = await _db.collection('users').doc(uid).get();
     if (doc.exists) {
       final data = doc.data() as Map<String, dynamic>;
-      return AppUser.fromMap(data); // <-- RENAMED
+      return AppUser.fromMap(data);
     }
     return null;
   }
@@ -194,7 +198,7 @@ class FirebaseServices {
   }
 
   // --------------------
-  // Image analysis / ML placeholders
+  // Image analysis
   // --------------------
   Future<String> analyzeFecalImage(dynamic fileOrBytes) async {
     await Future.delayed(const Duration(milliseconds: 400));
@@ -202,123 +206,124 @@ class FirebaseServices {
   }
 
   // --------------------
-  // Chatbot (NOW POWERED BY GEMINI)
+  // Chatbot (FIXED - Using google_generative_ai package)
   // --------------------
- Future<String> getChatbotResponse(String prompt) async {
-  print("--- 1. getChatbotResponse called with prompt: $prompt ---");
-  try {
-    final apiKey = dotenv.env['GEMINI_API_KEY'];
-    
-    if (apiKey == null || apiKey.isEmpty) {
-      print("--- 2. ERROR: API key is null or empty. ---");
-      return 'Error: API Key is missing from .env file.';
+  Future<String> getChatbotResponse(String prompt) async {
+    print("--- 1. getChatbotResponse called with prompt: $prompt ---");
+    try {
+      // Test connectivity first
+      if (!await _hasInternetConnection()) {
+        return 'Error: No internet connection. Please check your network and try again.';
+      }
+      
+      final model = _getGeminiModel();
+      print("--- 2. Gemini model initialized successfully ---");
+      
+      final content = [Content.text(prompt)];
+      print("--- 3. Sending request to Gemini API ---");
+      
+      final response = await model.generateContent(content);
+      print("--- 4. Response received successfully ---");
+      
+      return response.text ?? "Sorry, I received an empty response.";
+      
+    } catch (e, s) {
+      print("--- ERROR in getChatbotResponse ---");
+      print("Error: $e");
+      print("Stack trace: $s");
+      
+      // Check if it's a DNS/network issue
+      if (e.toString().contains('Failed host lookup') || 
+          e.toString().contains('No address associated with hostname')) {
+        return 'Network Error: Unable to connect to AI service. Please check your internet connection and try restarting the app.';
+      }
+      
+      return 'Error: Unable to get AI response. Please check your API key and try again.';
     }
-    
-    print("--- 2. API Key loaded successfully. ---");
-
-    // Use the correct model name from the available list
-    final url = Uri.parse(
-      'https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=$apiKey'
-    );
-    
-    print("--- 3. Making HTTP request to Gemini API ---");
-
-    final response = await http.post(
-      url,
-      headers: {'Content-Type': 'application/json'},
-      body: json.encode({
-        'contents': [
-          {
-            'parts': [
-              {'text': prompt}
-            ]
-          }
-        ]
-      }),
-    );
-
-    print("--- 4. Response received. Status: ${response.statusCode} ---");
-
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      final text = data['candidates']?[0]?['content']?['parts']?[0]?['text'];
-      return text ?? "Sorry, I received an empty response.";
-    } else {
-      print("--- ERROR: ${response.body} ---");
-      return 'Error: Unable to get response from AI. Status: ${response.statusCode}';
-    }
-
-  } catch (e, s) { 
-    print("--- X. CATCH BLOCK ERROR ---");
-    print("THE REAL ERROR IS: $e");
-    print("STACK TRACE: $s");
-    return 'An error occurred: $e';
   }
-}
+
+  // Helper method to check internet connectivity
+  Future<bool> _hasInternetConnection() async {
+    try {
+      final result = await http.get(Uri.parse('https://www.google.com')).timeout(Duration(seconds: 5));
+      return result.statusCode == 200;
+    } catch (e) {
+      print("Internet connectivity check failed: $e");
+      return false;
+    }
+  }
+
   // --------------------
   // Profile update
   // --------------------
   Future<void> updateUserProfile(String uid, Map<String, dynamic> updates) async {
     await _db.collection('users').doc(uid).update(updates);
   }
-  // Add this method to test which models are available
-Future<void> listAvailableModels() async {
-  try {
+
+  // --------------------
+  // Testing methods
+  // --------------------
+  Future<void> testGeminiApiDirectly() async {
     final apiKey = dotenv.env['GEMINI_API_KEY'];
     if (apiKey == null || apiKey.isEmpty) {
-      print("No API key found");
+      print("========== TEST: No API key found ==========");
       return;
     }
 
-    // Try to list models using the API directly
-    print("--- Attempting to list available models ---");
+    print("========== TESTING GEMINI API ==========");
+    print("API Key (first 10 chars): ${apiKey.substring(0, 10)}...");
     
-    // Try the simplest model name first
-    final model = GenerativeModel(model: 'models/gemini-pro', apiKey: apiKey);
-    final content = [Content.text("Hello")];
-    final response = await model.generateContent(content);
-    print("SUCCESS with models/gemini-pro: ${response.text}");
-    
-  } catch (e) {
-    print("Error listing models: $e");
-  }
-}
-Future<void> testGeminiApiDirectly() async {
-  final apiKey = dotenv.env['GEMINI_API_KEY'];
-  if (apiKey == null) {
-    print("No API key");
-    return;
-  }
-
-  try {
-    // List available models
-    final url = Uri.parse(
-      'https://generativelanguage.googleapis.com/v1/models?key=$apiKey'
-    );
-    
-    final response = await http.get(url);
-
-    print("========== LISTING AVAILABLE MODELS ==========");
-    print("Status Code: ${response.statusCode}");
-    
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      final models = data['models'] as List;
+    // First, try to list available models
+    try {
+      final url = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey');
+      final response = await http.get(url);
       
-      print("Available models:");
-      for (var model in models) {
-        print("  - ${model['name']}");
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        print("✅ API Key is valid!");
+        print("Available models:");
+        for (var model in data['models']) {
+          final name = model['name'].toString().replaceAll('models/', '');
+          print("  - $name");
+        }
+      } else {
+        print("❌ API Key validation failed!");
+        print("Status: ${response.statusCode}");
+        print("Response: ${response.body}");
       }
-    } else {
-      print("Error: ${response.body}");
+    } catch (e) {
+      print("❌ Failed to list models: $e");
     }
-    print("==============================================");
-    
-  } catch (e) {
-    print("========== ERROR LISTING MODELS ==========");
-    print("Error: $e");
-    print("==========================================");
-  }
-}
 
+    // Now try with available model names from your API
+    final modelsToTry = [
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-2.0-flash',
+      'gemini-flash-latest',
+      'gemini-pro-latest',
+    ];
+
+    for (var modelName in modelsToTry) {
+      try {
+        print("\nTrying model: $modelName");
+        final model = GenerativeModel(
+          model: modelName,
+          apiKey: apiKey
+        );
+        final content = [Content.text("Hello")];
+        final response = await model.generateContent(content);
+        
+        print("✅ SUCCESS with $modelName!");
+        print("Response: ${response.text}");
+        print("========================================");
+        return; // Exit after first success
+      } catch (e) {
+        print("❌ Failed with $modelName: $e");
+      }
+    }
+    
+    print("========================================");
+  }
+  
 }
