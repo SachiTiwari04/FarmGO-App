@@ -21,6 +21,10 @@ import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'firebase_options.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'ml/model_service.dart';   // For ML part
+import 'package:image/image.dart' as img;
+
+
 
 
 // =========================================================================
@@ -96,21 +100,27 @@ Future<void> _scheduleDailyReminder() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Load environment variables
   await dotenv.load(fileName: ".env");
   print("--- API Key from .env: ${dotenv.env['GEMINI_API_KEY']} ---");
-  
-  // Initialize Firebase FIRST before creating any FirebaseServices instances
+
+  // Initialize Firebase
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // NOW test the API (after Firebase is initialized)
-  await FirebaseServices().testGeminiApiDirectly();
-  
+  // Load ML models ONCE (singleton ModelService)
+  print("Loading ML Models...");
+  await ModelService().loadModels();
+  print("ML Models Loaded!");
+
+  // Initialize notifications
   await _initializeNotifications();
   tz.initializeTimeZones();
   _scheduleDailyReminder();
 
+  // Lock orientation + start the app
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -126,6 +136,7 @@ void main() async {
     );
   });
 }
+
 
 // =========================================================================
 // App Definition & Auth Flow
@@ -167,7 +178,7 @@ class FarmGoApp extends StatelessWidget {
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
           print("--- STREAM BUILDER: Connection state: ${snapshot.connectionState}, Has data: ${snapshot.hasData}, User: ${snapshot.data?.uid} ---");
-          
+
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Scaffold(
                 body: Center(child: CircularProgressIndicator()));
@@ -248,7 +259,7 @@ class _AuthScreenState extends State<AuthScreen> {
       AppUser? userDetails; // <-- RENAMED
 
       print("--- AUTH FORM: Starting ${_isLogin ? 'login' : 'signup'} process ---");
-      
+
       if (_isLogin) {
         userDetails = await firebaseApi.logIn(
           email: _emailController.text.trim(),
@@ -270,7 +281,7 @@ class _AuthScreenState extends State<AuthScreen> {
       if (userDetails != null) {
         appState.setFarmType(userDetails.farmType);
         print("--- AUTH FORM: Authentication successful, navigating to home page ---");
-        
+
         // Navigate to home page after successful authentication
         if (mounted) {
           Navigator.of(context).pushReplacement(
@@ -304,7 +315,7 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() {
           _isLoading = false;
         });
-        
+
         // These print statements will give us the full story
         print("--- AUTH FORM ERROR ---");
         print("THE ERROR: $e");
@@ -549,7 +560,7 @@ class _FarmGoHomePageState extends State<FarmGoHomePage> {
             currentUserDetails = details; // Store the object directly
             _isLoadingUserDetails = false;
           });
-          
+
           // Update AppState with farm type
           if (details != null) {
             Provider.of<AppState>(context, listen: false).setFarmType(details.farmType);
@@ -1001,7 +1012,7 @@ class _ChallengeSectionState extends State<ChallengeSection>
     super.initState();
     final farmType = Provider.of<AppState>(context, listen: false).currentFarmType;
     _lossDataKey = (farmType == 'Pig') ? 'pig' : 'poultry';
-    
+
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 1500),
       vsync: this,
@@ -1009,7 +1020,7 @@ class _ChallengeSectionState extends State<ChallengeSection>
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
     );
-    
+
     _animationController.forward();
   }
 
@@ -1105,7 +1116,7 @@ class _ChallengeSectionState extends State<ChallengeSection>
                       (entry) {
                         final index = entry.key;
                         final disease = entry.value;
-                        
+
                         return TweenAnimationBuilder<double>(
                           duration: Duration(milliseconds: 400 + (index * 100)),
                           tween: Tween(begin: 0.0, end: 1.0),
@@ -1518,6 +1529,8 @@ class _ChatbotPageState extends State<ChatbotPage> {
   }
 }
 
+
+
 class CameraAnalysisPage extends StatefulWidget {
   const CameraAnalysisPage({super.key});
 
@@ -1537,87 +1550,132 @@ class _CameraAnalysisPageState extends State<CameraAnalysisPage> {
     return await _firebaseServices.uploadHealthRecordImage(File(image.path), _user.uid);
   }
 
-  void _showSaveDialog(String analysisResult) {
+  void _showSaveDialog(
+      String general,
+      String disease,
+      double confidence,
+      ) {
+    String riskLevel;
+
+    if (confidence >= 80) {
+      riskLevel = "High Risk";
+    } else if (confidence >= 50) {
+      riskLevel = "Moderate Risk";
+    } else {
+      riskLevel = "Low Risk";
+    }
+
+    // Expanded explanations (Option A)
+    Map<String, String> explanations = {
+      "Salmonella":
+      "contaminated feed, dirty water, or unhygienic farm conditions",
+      "Coccidiosis":
+      "irritation inside the gut caused by internal parasites or wet litter",
+      "Worm Infection":
+      "internal worms affecting digestion and nutrient absorption",
+      "Wet Droppings":
+      "heat stress, diet changes, or mild digestive irritation",
+      "Blood Streaks":
+      "minor irritation inside the intestine or gut lining shedding",
+      "Healthy":
+      "normal digestion with no major signs of irritation",
+      "New Cattle Disease":
+      "unusual dropping patterns that do not match familiar conditions",
+      "Unknown":
+      "unclear or inconsistent patterns that may need monitoring",
+    };
+
+    String explanation = explanations[disease] ??
+        "a digestive imbalance or unfamiliar pattern";
+
+    // --- AI Safe Summary Format (Option B) ---
+    String summary;
+
+    if (disease == "Healthy") {
+      summary =
+      "The fecal sample appears normal in color and texture, suggesting healthy digestion with no concerning patterns.";
+    } else {
+      summary =
+      "The given fecal image suggests a possible risk of $disease, which is typically associated with $explanation.";
+
+      if (confidence < 50) {
+        summary +=
+        "\n\nLow confidence prediction — further observation is recommended.";
+      }
+    }
+
     String? notes;
-    String? selectedLocationId;
 
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (BuildContext dialogContext) => AlertDialog(
-        title: const Text('Analysis Complete'),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Prediction Summary',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+        ),
+
         content: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(analysisResult),
-            const SizedBox(height: 24),
+            Text(summary,
+                style: const TextStyle(fontSize: 15, height: 1.45)),
+            const SizedBox(height: 16),
+
+            Text(
+              "Confidence: ${confidence.toStringAsFixed(1)}%",
+              style: const TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+
+            Text(
+              "Risk Level: $riskLevel",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: riskLevel == "High Risk"
+                    ? Colors.red
+                    : riskLevel == "Moderate Risk"
+                    ? Colors.orange
+                    : Colors.green,
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
             TextField(
               decoration: const InputDecoration(
                 labelText: 'Notes (Optional)',
                 border: OutlineInputBorder(),
               ),
-              onChanged: (value) => notes = value,
+              onChanged: (v) => notes = v,
             ),
-            const SizedBox(height: 16),
-            StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('users/${_user.uid}/locations')
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const SizedBox.shrink();
-                }
-                return DropdownButtonFormField<String>(
-                  decoration: const InputDecoration(
-                      labelText: 'Location (Optional)',
-                      border: OutlineInputBorder()),
-                  items: snapshot.data!.docs.map((doc) {
-                    return DropdownMenuItem(
-                        value: doc.id, child: Text(doc['name']));
-                  }).toList(),
-                  onChanged: (value) => selectedLocationId = value,
-                );
+
+            const SizedBox(height: 20),
+
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _showFurtherSteps(disease);
               },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green),
+              child: const Text("Further Steps"),
             ),
           ],
         ),
+
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Discard')),
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Discard'),
+          ),
           ElevatedButton(
-            onPressed: () async {
-              final String? currentNotes = notes;
-              final String? currentLocationId = selectedLocationId;
-
+            onPressed: () {
               Navigator.pop(dialogContext);
-
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Saving record...')),
-              );
-
-              final imageUrl = await _uploadImageToStorage(_image!);
-              
-              if (!mounted) return;
-              
-              await _firebaseServices.saveHealthRecord(_user.uid, {
-                'imageUrl': imageUrl,
-                'result': {
-                  'parasiteType': analysisResult
-                      .split(' ')
-                      .firstWhere((s) => s.isNotEmpty, orElse: () => 'Unknown'),
-                  'severity': 'moderate',
-                  'fullText': analysisResult,
-                },
-                'locationId': currentLocationId,
-                'notes': currentNotes,
-                'timestamp': FieldValue.serverTimestamp(),
-              });
-              
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Analysis saved!')));
+              // TODO: handle saving
             },
             child: const Text('Save'),
           ),
@@ -1626,24 +1684,137 @@ class _CameraAnalysisPageState extends State<CameraAnalysisPage> {
     );
   }
 
+
+  void _showFurtherSteps(String disease) {
+    Map<String, String> steps = {
+      "Salmonella": """
+        • Isolate affected birds
+        • Clean and disinfect coop
+        • Provide electrolytes  
+        • Contact vet for antibiotics  
+        """,
+      "Coccidiosis": """
+• Check for blood in droppings
+• Give anti-coccidial medication
+• Keep litter dry
+• Provide clean water
+""",
+      "Worm Infection": """
+• Deworm under vet guidance
+• Improve feed quality
+• Maintain hygiene
+""",
+      "Wet Droppings": """
+• Reduce heat stress
+• Check feed quality
+• Observe for 24 hours
+""",
+      "Healthy": """
+• No immediate action
+• Continue regular monitoring
+""",
+    };
+
+    String stepText = steps[disease] ?? "General monitoring recommended.";
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text("Next Steps for $disease"),
+        content: Text(stepText),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Close"),
+          )
+        ],
+      ),
+    );
+  }
+
+
+
   Future<void> _pickAndAnalyzeImage() async {
     final XFile? image =
-        await _picker.pickImage(source: ImageSource.camera, imageQuality: 50);
+    await _picker.pickImage(source: ImageSource.camera, imageQuality: 50);
+
     if (image == null || !mounted) return;
 
     setState(() {
       _image = image;
       _isAnalyzing = true;
     });
-    final analysisResult = await _firebaseServices.analyzeFecalImage(File(image.path));
-    final result = analysisResult.toString();
-    if (mounted) {
-      setState(() {
-        _isAnalyzing = false;
-      });
-      _showSaveDialog(result);
-    }
+
+    // Decode photo
+    img.Image decoded = img.decodeImage(File(image.path).readAsBytesSync())!;
+
+    // Use model service for BOTH models
+    final model = ModelService();
+    final results = await model.predictBoth(decoded);
+
+    final general = results['general']!;
+    final disease = results['disease']!;
+
+    final combinedResult = "General: $general\nDisease: $disease";
+
+    if (!mounted) return;
+
+    setState(() {
+      _isAnalyzing = false;
+    });
+
+    // Show ONLY ONE dialog
+    _showSaveDialog(
+      general,          // general prediction label
+      disease,          // disease prediction label
+      results['confidence'],   // confidence value returned from model
+    );
+
   }
+
+  Future<void> _pickFromGalleryAndAnalyze() async {
+    final XFile? image = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 50,
+    );
+
+    if (image == null || !mounted) return;
+
+    setState(() {
+      _image = image;
+      _isAnalyzing = true;
+    });
+
+    // Decode selected image
+    img.Image decoded =
+    img.decodeImage(File(image.path).readAsBytesSync())!;
+
+    // Use SINGLETON model instance
+    final model = ModelService();
+
+    final results = await model.predictBoth(decoded);
+
+    final general = results['general']!;
+    final disease = results['disease']!;
+
+    final combinedResult = "General: $general\nDisease: $disease";
+
+    if (!mounted) return;
+
+    setState(() {
+      _isAnalyzing = false;
+    });
+
+    _showSaveDialog(
+      general,
+      disease,
+      results['confidence'],
+    );
+
+  }
+
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -1674,6 +1845,13 @@ class _CameraAnalysisPageState extends State<CameraAnalysisPage> {
                 icon: const Icon(Icons.camera_alt),
                 label:
                     Text(_image == null ? 'Take Photo' : 'Take Another Photo'),
+              ),
+              const SizedBox(height: 12),
+
+              ElevatedButton.icon(
+                onPressed: _isAnalyzing ? null : _pickFromGalleryAndAnalyze,
+                icon: const Icon(Icons.photo_library),
+                label: const Text("Select From Gallery"),
               ),
               const SizedBox(height: 20),
               const Text(
@@ -1903,7 +2081,7 @@ class _MapPageState extends State<MapPage> {
   final _searchService = MapSearchService();
   final _searchController = TextEditingController();
   static const LatLng _center = LatLng(20.5937, 78.9629);
-  
+
   // Search state
   List<SearchResult> _searchResults = [];
   bool _isSearching = false;
@@ -1986,7 +2164,7 @@ class _MapPageState extends State<MapPage> {
   void _performSearch(String query) {
     // Cancel previous timer
     _searchDebounceTimer?.cancel();
-    
+
     if (query.trim().isEmpty) {
       setState(() {
         _showSearchResults = false;
@@ -2028,7 +2206,7 @@ class _MapPageState extends State<MapPage> {
   void _selectSearchResult(SearchResult result) async {
     _searchService.addToHistory(result);
     _searchController.text = result.name;
-    
+
     setState(() {
       _showSearchResults = false;
     });
@@ -2093,8 +2271,8 @@ class _MapPageState extends State<MapPage> {
 
   void _toggleMapType() {
     setState(() {
-      _currentMapType = _currentMapType == MapType.normal 
-          ? MapType.satellite 
+      _currentMapType = _currentMapType == MapType.normal
+          ? MapType.satellite
           : MapType.normal;
     });
   }
@@ -2169,8 +2347,8 @@ class _MapPageState extends State<MapPage> {
         ),
         actions: [
           IconButton(
-            icon: Icon(_currentMapType == MapType.normal 
-                ? Icons.satellite_alt 
+            icon: Icon(_currentMapType == MapType.normal
+                ? Icons.satellite_alt
                 : Icons.map),
             tooltip: 'Toggle Map Type',
             onPressed: _toggleMapType,
@@ -2203,7 +2381,7 @@ class _MapPageState extends State<MapPage> {
             onTap: _onMapTap,
             mapType: _currentMapType,
           ),
-          
+
           // Search bar
           Positioned(
             top: 16,
@@ -2236,7 +2414,7 @@ class _MapPageState extends State<MapPage> {
                     ),
                     onChanged: _performSearch,
                   ),
-                  
+
                   // Search results
                   if (_showSearchResults) ...[
                     const Divider(height: 1),

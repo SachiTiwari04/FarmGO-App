@@ -38,6 +38,9 @@ dependencies:
   cupertino_icons: ^1.0.2
   google_generative_ai: ^0.4.7
   flutter_dotenv: ^6.0.0
+  tflite_flutter: ^0.12.1
+  image: ^4.5.4
+  path_provider: ^2.1.5
 
 
 dev_dependencies:
@@ -48,7 +51,11 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - .env 
+    - .env
+    - assets/ml/best_image_model.tflite
+    - assets/ml/animal_disease_classifier.tflite
+    - assets/ml/labels.txt
+    - assets/ml/disease_labels.txt
 
   fonts:
     - family: Inter
@@ -57,3 +64,4 @@ flutter:
     - family: FreightTextMedium
       fonts:
         - asset: assets/fonts/Lora-VariableFont_wght.ttf
+
