@@ -1,16 +1,43 @@
-# farm_go_app
+# 🌾 FarmGo - Smart Farm Management App
 
-A new Flutter project.
+A comprehensive biosecurity and farm management solution for poultry and pig farms.
 
-## Getting Started
+## Features
+- 🤖 AI-powered chatbot for farming advice (Google Gemini)
+- 📊 Farm data tracking and analytics
+- 🗺️ Interactive farm location mapping
+- 📸 AI fecal analysis for disease detection
+- 📋 Digital biosecurity checklists
+- 📈 Visual data dashboards
 
-This project is a starting point for a Flutter application.
+## Quick Start
 
-A few resources to get you started if this is your first Flutter project:
+See [SETUP.md](SETUP.md) for detailed setup instructions.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+\`\`\`bash
+# Clone, install, and configure
+git clone https://github.com/SachiTiwari04/FarmGO-App.git
+cd farm_go_app
+flutter pub get
+cp .env.example .env
+# Edit .env with your API keys
+flutter run
+\`\`\`
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Tech Stack
+- **Framework**: Flutter
+- **Backend**: Firebase (Auth, Firestore, Storage)
+- **AI**: Google Gemini API
+- **Maps**: Google Maps Platform
+- **State Management**: Provider
+
+## Screenshots
+![alt text](<Screenshot 2025-12-16 020408.png>)
+![alt text](<Screenshot 2025-12-16 020134.png>)
+![alt text](<Screenshot 2025-12-16 020109.png>)
+![alt text](<Screenshot 2025-12-14 140400.png>)
+![alt text](<Screenshot 2025-12-16 023549.png>)
+![alt text](<Screenshot 2025-12-16 023630.png>)
+![alt text](b51fec21b7ca42069d312a9d128f63ef.jpg)
+![alt text](image-1.png)
+![alt text](image-2.png)
